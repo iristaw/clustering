@@ -1,0 +1,96 @@
+require(data.table)
+wos.read <- function(files, ...) {
+  items = data.table()
+  if (!is.vector(files)) {
+    files <- c(files)
+  }
+  for (file in files) {
+    items <- rbind(items, fread(file, sep = "\t", sep2 = "\t", na.strings = "", encoding = "UTF-8", quote = "", fill = TRUE, blank.lines.skip = TRUE, ...))
+  }
+  names <- colnames(items)
+  name <- names[length(names)]
+  items[, (name) := NULL]
+  return(items)
+}
+
+require(tm)
+require(textmineR)
+require(stringr)
+
+OverviewJournal <- function(data) {
+  
+  papers <- data
+  
+  docs <- vector(mode = 'character', length = nrow(papers))
+  titles <- vector(mode = 'character', length =nrow(papers))
+  
+  for (i in seq_along(1:length)) {
+    p <- papers[i]
+    keywords <- unlist(p$DE)
+    keywords <- str_c(keywords, collapse = " ")
+    
+    keywordsplus <- unlist(p$ID)
+    keywordsplus <- str_c(keywordsplus, collapse = " ")
+    
+    titles[i] <- p$TI
+    docs[i] <- str_c(p$TI, p$AB, keywords, keywordsplus, sep = " ")
+  }
+  
+  dtm <- CreateDtm(doc_vec = docs,
+                   doc_names = 1:length(docs),
+                   ngram_window = c(1, 2),
+                   stopword_vec = c(tm::stopwords("english"),
+                                    tm::stopwords("SMART")),
+                   lower = TRUE,
+                   remove_numbers = TRUE,
+                   remove_punctuation = TRUE,
+                   verbose = FALSE)
+  
+  
+  tf_mat <- TermDocFreq(dtm)
+  
+  tfidf <- t(dtm[, tf_mat$term]) * tf_mat$idf
+  tfidf <- t(tfidf)
+  csim <- tfidf / sqrt(rowSums(tfidf * tfidf))
+  csim <- csim %*% t(csim)
+  cdist <- as.dist(1 - csim)
+  
+  hc <- hclust(cdist, "ward.D")
+  clustering <- cutree(hc, 10)
+  plot(hc, main = "Hierarchical clustering of 100 grant abstracts", ylab = "", xlab = "", yaxt = "n")
+  
+  rect.hclust(hc, 10, border = "red")
+  
+  p_words <- colSums(dtm) / sum(dtm)
+  
+  cluster_words <- lapply(unique(clustering), function(x) {
+    rows <- dtm[clustering == x,]
+    
+    # for memory's sake, drop all words that don't appear in the cluster
+    rows <- rows[, colSums(rows) > 0]
+    
+    colSums(rows) / sum(rows) - p_words[colnames(rows)]
+  })
+  
+  cluster_summary <- data.frame(cluster = unique(clustering),
+                                size = as.numeric(table(clustering)),
+                                top_words = sapply(cluster_words, function(d) {
+                                  paste(names(d)[order(d, decreasing = TRUE)][1:10],
+                                        collapse = ",")
+                                }),
+                                stringsAsFactors = FALSE
+  )
+  
+  
+  # plot a word cloud of one cluster as an example
+  wordcloud::wordcloud(words = names(cluster_words[[5]]),
+                       freq = cluster_words[[5]],
+                       max.words = 100,
+                       random.order = FALSE,
+                       colors = c("red", "yellow", "blue"),
+                       main = "Top words in cluster 100")
+  
+  View(cluster_summary)
+  
+  data.frame(titles,cluster=clustering)
+}
